@@ -585,6 +585,11 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
             realtimeRowsConsumedMeter =
                 _serverMetrics.addMeteredTableValue(_metricKeyName, ServerMeter.REALTIME_ROWS_CONSUMED, 1,
                     realtimeRowsConsumedMeter);
+            long currentTime = System.currentTimeMillis();
+            long pinotIngestionDelayMs = currentTime - msgMetadata.getRecordIngestionTimeMs();
+            pinotIngestionDelayMs = pinotIngestionDelayMs >= 0 ? pinotIngestionDelayMs : 0;
+            // Record Pinot Ingestion delay for this partition
+            _realtimeTableDataManager.updatePinotIngestionDelay(pinotIngestionDelayMs, currentTime, _partitionGroupId);
           } catch (Exception e) {
             _numRowsErrored++;
             String errorMessage = String.format("Caught exception while indexing the record: %s", transformedRow);
@@ -611,6 +616,8 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
       if (_segmentLogger.isDebugEnabled()) {
         _segmentLogger.debug("empty batch received - sleeping for {}ms", idlePipeSleepTimeMillis);
       }
+      // Record Pinot ingestion delay as zero since we are up-to-date and no new events
+      _realtimeTableDataManager.updatePinotIngestionDelay(0, System.currentTimeMillis(), _partitionGroupId);
       // If there were no messages to be fetched from stream, wait for a little bit as to avoid hammering the stream
       Uninterruptibles.sleepUninterruptibly(idlePipeSleepTimeMillis, TimeUnit.MILLISECONDS);
     }

@@ -39,6 +39,36 @@ public class TableStateUtils {
   }
 
   /**
+   *
+   * TBD: reuse this in is all segments loaded below
+   */
+  public static List<String> getIdealStateOnlineSegments(HelixManager helixManager, String tableNameWithType) {
+    HelixDataAccessor dataAccessor = helixManager.getHelixDataAccessor();
+    PropertyKey.Builder keyBuilder = dataAccessor.keyBuilder();
+    IdealState idealState = dataAccessor.getProperty(keyBuilder.idealStates(tableNameWithType));
+    List<String> onlineSegments = new ArrayList<>();
+    if (idealState == null) {
+      LOGGER.warn("Failed to find ideal state for table: {}", tableNameWithType);
+      return onlineSegments;
+    }
+
+    // Get all ONLINE segments from idealState
+    String instanceName = helixManager.getInstanceName();
+    Map<String, Map<String, String>> idealStatesMap = idealState.getRecord().getMapFields();
+    for (Map.Entry<String, Map<String, String>> entry : idealStatesMap.entrySet()) {
+      String segmentName = entry.getKey();
+      Map<String, String> instanceStateMap = entry.getValue();
+      String expectedState = instanceStateMap.get(instanceName);
+      // Only track ONLINE segments assigned to the current instance
+      if (!CommonConstants.Helix.StateModel.SegmentStateModel.ONLINE.equals(expectedState)) {
+        continue;
+      }
+      onlineSegments.add(segmentName);
+    }
+    return onlineSegments;
+  }
+
+  /**
    * Checks if all segments for the given @param tableNameWithType are succesfully loaded
    * This function will get all segments in IDEALSTATE and CURRENTSTATE for the given table,
    * and then check if all ONLINE segments in IDEALSTATE match with CURRENTSTATE.
@@ -47,6 +77,10 @@ public class TableStateUtils {
    * @return true if all segments for the given table are succesfully loaded. False otherwise
    */
   public static boolean isAllSegmentsLoaded(HelixManager helixManager, String tableNameWithType) {
+    HelixDataAccessor dataAccessor = helixManager.getHelixDataAccessor();
+    PropertyKey.Builder keyBuilder = dataAccessor.keyBuilder();
+    String instanceName = helixManager.getInstanceName();
+    /*
     HelixDataAccessor dataAccessor = helixManager.getHelixDataAccessor();
     PropertyKey.Builder keyBuilder = dataAccessor.keyBuilder();
     IdealState idealState = dataAccessor.getProperty(keyBuilder.idealStates(tableNameWithType));
@@ -70,6 +104,8 @@ public class TableStateUtils {
       onlineSegments.add(segmentName);
     }
 
+     */
+    List<String> onlineSegments = getIdealStateOnlineSegments(helixManager, tableNameWithType);
     if (onlineSegments.size() > 0) {
       LiveInstance liveInstance = dataAccessor.getProperty(keyBuilder.liveInstance(instanceName));
       if (liveInstance == null) {

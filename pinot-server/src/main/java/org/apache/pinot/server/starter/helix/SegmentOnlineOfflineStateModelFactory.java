@@ -33,6 +33,7 @@ import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.common.utils.SegmentName;
 import org.apache.pinot.core.data.manager.InstanceDataManager;
 import org.apache.pinot.core.data.manager.realtime.LLRealtimeSegmentDataManager;
+import org.apache.pinot.core.data.manager.realtime.RealtimeTableDataManager;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.spi.config.table.TableType;
@@ -91,6 +92,16 @@ public class SegmentOnlineOfflineStateModelFactory extends StateModelFactory<Sta
 
       TableDataManager tableDataManager = _instanceDataManager.getTableDataManager(realtimeTableName);
       Preconditions.checkNotNull(tableDataManager);
+      if (tableDataManager instanceof RealtimeTableDataManager) {
+        RealtimeTableDataManager realtimeTableDataManager = (RealtimeTableDataManager)
+            tableDataManager;
+        // Once we stop consuming for one segment we track the inactive partition for some time,
+        // if consumption does not restart in a given interval we verify if this server still host
+        // this partition for the purposes of tracking the ingestion delay for this partition.
+        realtimeTableDataManager.markPartitionForVerification(segmentName.getPartitionGroupId());
+      } else {
+        throw new RuntimeException("Transition from CONSUMING TO ONLINE for non-realtime table " + realtimeTableName);
+      }
       SegmentDataManager acquiredSegment = tableDataManager.acquireSegment(segmentNameStr);
       // For this transition to be correct in helix, we should already have a segment that is consuming
       if (acquiredSegment == null) {
@@ -99,7 +110,7 @@ public class SegmentOnlineOfflineStateModelFactory extends StateModelFactory<Sta
 
       try {
         if (!(acquiredSegment instanceof LLRealtimeSegmentDataManager)) {
-          // We found a LLC segment that is not consuming right now, must be that we already swapped it with a
+          // We found an LLC segment that is not consuming right now, must be that we already swapped it with a
           // segment that has been built. Nothing to do for this state transition.
           _logger
               .info("Segment {} not an instance of LLRealtimeSegmentDataManager. Reporting success for the transition",
@@ -138,6 +149,19 @@ public class SegmentOnlineOfflineStateModelFactory extends StateModelFactory<Sta
     @Transition(from = "CONSUMING", to = "DROPPED")
     public void onBecomeDroppedFromConsuming(Message message, NotificationContext context) {
       _logger.info("SegmentOnlineOfflineStateModel.onBecomeDroppedFromConsuming() : " + message);
+      String realtimeTableName = message.getResourceName();
+      String segmentNameStr = message.getPartitionName();
+      TableDataManager tableDataManager = _instanceDataManager.getTableDataManager(realtimeTableName);
+      Preconditions.checkNotNull(tableDataManager);
+      if (tableDataManager instanceof RealtimeTableDataManager) {
+        RealtimeTableDataManager realtimeTableDataManager = (RealtimeTableDataManager)
+            tableDataManager;
+        LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+        // We stop tracking ingestion delay partitions for which their segments go into DROPPED state.
+        realtimeTableDataManager.stopTrackingPartitionDelay(segmentName.getPartitionGroupId());
+      } else {
+        throw new RuntimeException("Transition from CONSUMING TO DROPPED for non-realtime table " + realtimeTableName);
+      }
       try {
         onBecomeOfflineFromConsuming(message, context);
         onBecomeDroppedFromOffline(message, context);
