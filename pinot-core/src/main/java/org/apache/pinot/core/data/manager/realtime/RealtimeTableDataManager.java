@@ -115,6 +115,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
 
   private TableDedupMetadataManager _tableDedupMetadataManager;
   private TableUpsertMetadataManager _tableUpsertMetadataManager;
+  // Object to track ingestion delay for all partitions
+  private MaximumPinotConsumptionDelayTracker _maximumPinotConsumptionDelayTracker;
 
   public RealtimeTableDataManager(Semaphore segmentBuildSemaphore) {
     _segmentBuildSemaphore = segmentBuildSemaphore;
@@ -123,7 +125,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   @Override
   protected void doInit() {
     _leaseExtender = SegmentBuildTimeLeaseExtender.getOrCreate(_instanceId, _serverMetrics, _tableNameWithType);
-
+    // Tracks maximum consumption delay for all partitions being served for this table
+    _maximumPinotConsumptionDelayTracker = new MaximumPinotConsumptionDelayTracker(_serverMetrics, _tableNameWithType,
+        this);
     File statsFile = new File(_tableDataDir, STATS_FILE_NAME);
     try {
       _statsHistory = RealtimeSegmentStatsHistory.deserialzeFrom(statsFile);
@@ -212,6 +216,63 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     if (_leaseExtender != null) {
       _leaseExtender.shutDown();
     }
+    // Make sure we do metric cleanup when we shutdown the table.
+    if (_maximumPinotConsumptionDelayTracker != null) {
+      _maximumPinotConsumptionDelayTracker.shutdown();
+    }
+    // Now that segments can't report metric destroy metric for this table
+    _serverMetrics.removeTableGauge(_tableNameWithType, ServerGauge.MAX_PINOT_CONSUMPTION_DELAY_MS);
+  }
+
+  /*
+   * Pass-through method to handle CONSUMING->DROPPED transition.
+   *
+   * @param pid Partition id that we must stop tracking on this server.
+   */
+  public void stopTrackingPartitionDelay(long pid) {
+    if (_maximumPinotConsumptionDelayTracker != null) {
+      _maximumPinotConsumptionDelayTracker.stopTrackingPinotConsumptionDelayForPartition(pid);
+    }
+  }
+
+  /*
+   * Pass-through method to handle CONSUMING->ONLINE transition.
+   * If no new consumption is noticed for this segment in some timeout, we will read
+   * ideal state to verify the partition is still hosted in this server.
+   *
+   * @param pid partition id of partition to be verified as hosted by this server.
+   */
+  public void markPartitionForVerification(long pid) {
+    if (_maximumPinotConsumptionDelayTracker != null) {
+      _maximumPinotConsumptionDelayTracker.markPartitionForConfirmation(pid);
+    }
+  }
+
+  /*
+   * Pass-through function used by LLRealtimeSegmentManagers to update their partition delays
+   *
+   * @param d Ingestion delay being reported.
+   * @param t Timestamp of the measure being provided, i.e. when this delay was computed.
+   * @param pid Partition ID for which delay is being updated.
+   */
+  public void updatePinotIngestionDelay(long d, long t, long pid) {
+    if (_maximumPinotConsumptionDelayTracker != null) {
+      _maximumPinotConsumptionDelayTracker.recordPinotConsumptionDelay(d, t, pid);
+    }
+  }
+
+  /**
+   * Reads ideal state and verifies if current partition is hosted by the current server.
+   */
+  public boolean isPartitionHostedInThisServer(long partitionId) {
+    List<String> segments = TableStateUtils.getIdealStateOnlineSegments(_helixManager, _tableNameWithType);
+    for (String segmentNameStr : segments) {
+      LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+      if (partitionId == segmentName.getPartitionGroupId()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public RealtimeSegmentStatsHistory getStatsHistory() {
