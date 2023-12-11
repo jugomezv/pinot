@@ -607,6 +607,10 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
             realtimeRowsConsumedMeter =
                 _serverMetrics.addMeteredTableValue(_clientId, ServerMeter.REALTIME_ROWS_CONSUMED, 1,
                     realtimeRowsConsumedMeter);
+            long lastMileIngestionDelayMs = System.currentTimeMillis() - msgMetadata.getRecordIngestionTimeMs();
+            lastMileIngestionDelayMs = lastMileIngestionDelayMs < 0 ? 0 : lastMileIngestionDelayMs;
+            _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionGroupId,
+                ServerGauge.PARTITION_INGESTION_LAG_MS, lastMileIngestionDelayMs);
           } catch (Exception e) {
             _numRowsErrored++;
             String errorMessage = String.format("Caught exception while indexing the record: %s", transformedRow);
@@ -649,6 +653,9 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
       if (_segmentLogger.isDebugEnabled()) {
         _segmentLogger.debug("empty batch received - sleeping for {}ms", idlePipeSleepTimeMillis);
       }
+      // Set delay to zero, we are up-to-date.
+      _serverMetrics.setValueOfPartitionGauge(_tableNameWithType, _partitionGroupId,
+          ServerGauge.PARTITION_INGESTION_LAG_MS, 0);
       // If there were no messages to be fetched from stream, wait for a little bit as to avoid hammering the stream
       Uninterruptibles.sleepUninterruptibly(idlePipeSleepTimeMillis, TimeUnit.MILLISECONDS);
     }
